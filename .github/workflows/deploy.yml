@@ -1,0 +1,125 @@
+name: Build and Deploy to Raspberry Pi
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}   # 수동 실행 버튼도 활성화
+
+env:
+  IMAGE_NAME: raspi-ai-agent
+
+jobs:
+  # ============================================
+  # 1) CI: 빌드 + 테스트
+  # ============================================
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build and run tests
+        run: ./gradlew build
+
+      - name: Upload test results (실패 시 디버깅용)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/test-results/test
+          retention-days: 5
+
+  # ============================================
+  # 2) CI: ARM64 Docker 이미지 빌드 & 푸시
+  # ============================================
+  build-and-push-image:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set short SHA as image tag
+        id: meta
+        run: echo "tag=$(echo ${GITHUB_SHA} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (크로스 아키텍처 빌드용)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================
+  # 3) CD: 라즈베리파이 SSH 배포
+  # ============================================
+  deploy-to-raspberry-pi:
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_SSH_PORT }}
+          script: |
+            set -e
+            echo "===== 배포 디렉토리로 이동 ====="
+            cd ${{ secrets.SERVER_DEPLOY_PATH }}
+
+            echo "===== 최신 설정 파일 반영 (git pull) ====="
+            git pull origin main
+
+            echo "===== Docker Hub 로그인 ====="
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+            echo "===== 최신 이미지 Pull ====="
+            docker compose -f docker/docker-compose.yml pull app
+
+            echo "===== 컨테이너 재기동 (무중단 재시작) ====="
+            docker compose -f docker/docker-compose.yml up -d --no-deps app
+
+            echo "===== 사용하지 않는 이미지 정리 ====="
+            docker image prune -f
+
+            echo "===== 배포 완료, 컨테이너 상태 확인 ====="
+            docker compose -f docker/docker-compose.yml ps
