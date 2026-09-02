@@ -40,8 +40,8 @@ spring:
       genai:
         api-key: ${GOOGLE_AI_API_KEY:}
         chat:
-          model: gemini-3.6-flash   # 실제 사용 가능한 모델명은 최신 문서에서 확인 필요
           options:
+            model: gemini-3.6-flash   # 실제 사용 가능한 모델명은 최신 문서에서 확인 필요
             temperature: 0.7
 
 management:
