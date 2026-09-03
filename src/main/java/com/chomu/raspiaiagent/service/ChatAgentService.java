@@ -1,5 +1,6 @@
 package com.chomu.raspiaiagent.service;
 
+import com.chomu.raspiaiagent.repository.ActivityLogRepository;
 import com.chomu.raspiaiagent.tool.NewsSearchTool;
 import com.chomu.raspiaiagent.tool.SystemStatusTool;
 import com.chomu.raspiaiagent.tool.WeatherTool;
@@ -11,20 +12,27 @@ import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Service;
 
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.stream.Collectors;
+
 @Service
 public class ChatAgentService {
 
     private final ChatClient chatClient;
     private final InterestExtractionService interestExtractionService;
+    private final ActivityLogRepository activityLogRepository;
 
     public ChatAgentService(
             ChatModel chatModel,
             SystemStatusTool systemStatusTool,
             WeatherTool weatherTool,
             NewsSearchTool newsSearchTool,
-            InterestExtractionService interestExtractionService) {
+            InterestExtractionService interestExtractionService,
+            ActivityLogRepository activityLogRepository) {
 
         this.interestExtractionService = interestExtractionService;
+        this.activityLogRepository = activityLogRepository;
 
         ChatMemory chatMemory = MessageWindowChatMemory.builder()
                 .chatMemoryRepository(new InMemoryChatMemoryRepository())
@@ -44,16 +52,42 @@ public class ChatAgentService {
     }
 
     public String chat(String conversationId, String userMessage) {
+        String recentActivity = getRecentActivitySummary();
+
+        String contextualMessage = recentActivity.isBlank()
+                ? userMessage
+                : "(참고: 최근 혼자 있는 동안의 내 활동 기록: %s)\n\n사용자: %s"
+                .formatted(recentActivity, userMessage);
+
         String reply = chatClient.prompt()
-                .user(userMessage)
+                .user(contextualMessage)
                 .advisors(advisor -> advisor.param(
                         ChatMemory.CONVERSATION_ID, conversationId))
                 .call()
                 .content();
 
-        // 관심사 추출은 응답을 막지 않도록 별도 처리 (일단 동기 호출, 나중에 비동기 전환 고려 가능)
         interestExtractionService.extractAndSaveInterest(userMessage);
 
         return reply;
+    }
+
+    /**
+     * 최근 24시간 이내의 활동 로그를 요약해서 반환.
+     * 대화 시작 시 캐릭터가 "그동안 뭐 했는지" 자연스럽게 언급할 수 있게 함.
+     */
+    private String getRecentActivitySummary() {
+        OffsetDateTime since = OffsetDateTime.now().minusHours(24);
+        List<String> logs = activityLogRepository
+                .findByCreatedAtAfterOrderByCreatedAtAsc(since)
+                .stream()
+                .map(log -> log.getContent())
+                .collect(Collectors.toList());
+
+        if (logs.isEmpty()) {
+            return "";
+        }
+        // 너무 길어지지 않게 최근 3개만
+        int start = Math.max(0, logs.size() - 3);
+        return String.join(" / ", logs.subList(start, logs.size()));
     }
 }
