@@ -51,6 +51,8 @@ public class ChatAgentService {
                 .build();
     }
 
+    private int messageCount = 0;
+
     public String chat(String conversationId, String userMessage) {
         String recentActivity = getRecentActivitySummary();
 
@@ -66,7 +68,10 @@ public class ChatAgentService {
                 .call()
                 .content();
 
-        interestExtractionService.extractAndSaveInterest(userMessage);
+        messageCount++;
+        if (messageCount % 5 == 0) {  // ← 5번마다 1번만 추출
+            interestExtractionService.extractAndSaveInterest(userMessage);
+        }
 
         return reply;
     }

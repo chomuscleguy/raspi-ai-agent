@@ -36,7 +36,7 @@ public class IdleActivityScheduler {
      * 1시간마다 실행. 현재 날씨/시스템 상태/관심사를 바탕으로
      * 캐릭터가 "혼자 있는 동안 무엇을 하고 있는지"를 짧게 생성해 저장한다.
      */
-    @Scheduled(fixedRate = 3600000) // 1시간 = 3,600,000ms
+    @Scheduled(fixedRate = 10800000) // 3시간마다 (기존 1시간 → 3시간)
     public void generateIdleActivity() {
         try {
             String weatherInfo = safeGetWeather();
